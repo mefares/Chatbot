@@ -1,0 +1,127 @@
+import os
+import openai
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding  # import model from huggingface 
+from llama_index.core.node_parser import SentenceWindowNodeParser # sentencewindwow node parser not implemented yet
+from llama_index.core.node_parser import SentenceSplitter # parser object  utilized for parsing and chunking 
+from llama_index.core import Settings
+from llama_index.core import SimpleDirectoryReader # reading pdf , doc ,...
+from llama_index.core import PromptTemplate # propmpt for the llm 
+from llama_index.core import VectorStoreIndex # # indexing the documents
+from llama_index.core.postprocessor import MetadataReplacementPostProcessor 
+from llama_index.llms.llama_cpp import LlamaCPP # loading llm using llamacpp
+from llama_index.llms.llama_cpp.llama_utils import (
+    messages_to_prompt,
+    completion_to_prompt,
+)
+ 
+ 
+# SSL certification 
+from huggingface_hub import configure_http_backend
+import os
+import urllib3
+import requests
+def backend_factory() -> requests.Session:
+    session = requests.Session()
+    session.verify = False
+    return session
+configure_http_backend(backend_factory=backend_factory)
+ 
+llm = LlamaCPP(
+    # You can pass in the URL to a GGML model to download it automatically
+    #model_url=model_url,
+    # optionally, you can set the path to a pre-downloaded model instead of model_url
+    #model_path="C:\Hamdi\Ape_models\Meta-Llama-3.1-8B-Instruct-Q8_0.gguf",
+    # model_path="C:\Hamdi\Ape_models\openhermes-2.5-mistral-7b.Q2_K.gguf",
+    #model_path="C:\Hamdi\Ape_models\Phi-3-mini-4k-instruct-q4.gguf",
+    model_path="C:\DASAPE\openhermes-2.5-mistral-7b.Q2_K.gguf",
+    temperature=0.1,
+    max_new_tokens=1024,
+    # llama2 has a context window of 4096 tokens, but we set it lower to allow for some wiggle room
+    context_window=10000, # number of tokens supported as input
+    # kwargs to pass to __call__()
+    generate_kwargs={},
+    # kwargs to pass to __init__()
+    # set to at least 1 to use GPU
+    model_kwargs={"n_gpu_layers": 0},
+    # transform inputs into Llama2 format
+    messages_to_prompt=messages_to_prompt,
+    completion_to_prompt=completion_to_prompt,
+    verbose=False,
+)
+embed_model = HuggingFaceEmbedding(
+    model_name="BAAI/bge-large-en-v1.5"
+)
+Settings.llm = llm
+Settings.embed_model = embed_model
+#Settings.text_splitter = text_splitter
+ 
+# adding path directory to documents 
+documents = SimpleDirectoryReader(
+    "process-data"
+).load_data()
+documents
+ 
+# create vector store index ( chunking+embedding)  default chunk_size=1024,chunk_overlap=20
+index = VectorStoreIndex.from_documents(documents, embed_model=embed_model)
+ 
+from llama_index.core import StorageContext , load_index_from_storage
+# Store index in our disk ( in storage file )
+persist_dir="./Storage"
+index.storage_context.persist(persist_dir=persist_dir)
+ 
+persist_dir="./Storage"
+storage_context=StorageContext.from_defaults(persist_dir=persist_dir)
+ 
+#Load indexing
+index_new=load_index_from_storage(storage_context,embed_model=embed_model)
+ 
+# initializing the query_engine
+query_engine = index_new.as_query_engine()
+ 
+# ====== Customise prompt template ======
+qa_prompt_tmpl_str = (
+"Context information is below.\n"
+"---------------------\n"
+"{context_str}\n"
+"---------------------\n"
+"Given the context information above I want you to answer the query in a detailed manner. Answer only in French'.\n"
+"Query: {query_str}\n"
+"Answer: "
+)
+qa_prompt_tmpl = PromptTemplate(qa_prompt_tmpl_str)
+ 
+query_engine.update_prompts(
+{"response_synthesizer:text_qa_template": qa_prompt_tmpl}
+)
+ 
+# Testing questions 
+response=query_engine.query("Pouvez-vous décrire les solutions de sécurité mises en œuvre dans le cadre de la solution (Confidentialité et intégrité des flux)  ? ")
+response_1=response.response
+list_file=[]
+spe_char_to_remove = ["[/INST]", "[/SYS]","[/ASSISTANT]","[/END]"] #we can use this pattern [/***] to delete this kind of of pattern
+resp_1=""
+for character in spe_char_to_remove:
+    response_1 = response_1.replace(character, ' ')       
+for n in response.source_nodes:
+    list_file.append(n.metadata["file_name"])
+my_set=set(list_file)
+new_list_file=list(my_set)
+for i in new_list_file:
+    resp_1=resp_1+i+"   "
+final_resp=response_1+"\n"+resp_1
+ 
+print(final_resp)
+ 
+Extracting file_names from  response source_nodes 
+list_file=[]
+for n in response.source_nodes:
+    list_file.append(n.metadata["file_name"])
+my_set=set(list_file)
+new_list_file=list(my_set)
+print(new_list_file)
+ 
+# printing the final reponse , source_nodes (including node_id, cosine_similarity score , node text) all together with 'pprint_response'
+from llama_index.legacy.response.pprint_utils import pprint_response
+ 
+# Assuming `response` is an instance of `Response` that you have obtained from the multi-document agent
+pprint_response(response, show_source=True)
